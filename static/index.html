@@ -1,0 +1,335 @@
+<!DOCTYPE HTML>
+<html>
+  <head>
+    <meta charset="utf8" />
+    <title>Comparing Attention Dynamics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+
+      .container {
+        max-width: 1800px;
+        margin: 0 auto;
+        display: flex;
+        gap: 20px;
+      }
+
+      .control-panel {
+        width: 300px;
+        padding: 20px;
+        background: #f5f5f5;
+        border-radius: 8px;
+      }
+
+      .model-view {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .model-content {
+        background: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+        min-height: 200px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      textarea, input {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-family: inherit;
+      }
+
+      textarea {
+        height: 150px;
+        resize: vertical;
+      }
+
+      button {
+        width: 100%;
+        padding: 8px;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-bottom: 10px;
+      }
+
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+
+      .target-container {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .target-container input {
+        flex: 1;
+        margin-bottom: 0;
+      }
+
+      .target-container button {
+        width: auto;
+        margin-bottom: 0;
+      }
+
+      .highlighted {
+        background-color: #660d0d;
+      }
+
+      .token-rate {
+        font-size: 0.9em;
+        color: #666;
+        margin-bottom: 10px;
+      }
+
+      .graph-container {
+        height: 200px;
+        margin-top: 20px;
+      }
+
+      .prompt-display {
+        margin-bottom: 10px;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 4px;
+      }
+
+      .prompt-token {
+        display: inline-block;
+        padding: 2px 4px;
+        margin: 0 2px;
+        border-radius: 3px;
+        transition: background-color 0.2s;
+      }
+
+      .generation-slider {
+        width: 100%;
+        margin: 10px 0;
+      }
+
+      .slider-container {
+        margin: 10px 0;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 4px;
+      }
+
+      .slider-info {
+        font-size: 0.8em;
+        color: #666;
+        margin-top: 5px;
+      }
+      
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="control-panel">
+        <textarea id="prompt" placeholder="Enter prompt..."></textarea>
+        <button id="run">Generate</button>
+      </div>
+      
+      <div class="model-view">
+        <h2>Model A</h2>
+        <div id="prompt-display-a" class="prompt-display"></div>
+        <div id="content-a" class="model-content" style="font-size: 0.7em;"></div>
+        <div class="slider-container">
+          <input type="range" id="slider-a" class="generation-slider" min="0" max="0" value="0" disabled>
+          <div id="slider-info-a" class="slider-info">Step: 0 / 0</div>
+        </div>
+        <div id="rate-a" class="token-rate"></div>
+        <div class="graph-container">
+          <canvas id="graph-a"></canvas>
+        </div>
+      </div>
+      
+      <div class="model-view">
+        <h2>Model B</h2>
+        <div id="prompt-display-b" class="prompt-display"></div>
+        <div id="content-b" class="model-content" style="font-size: 0.7em;"></div>
+        <div class="slider-container">
+          <input type="range" id="slider-b" class="generation-slider" min="0" max="0" value="0" disabled>
+          <div id="slider-info-b" class="slider-info">Step: 0 / 0</div>
+        </div>
+        <div id="rate-b" class="token-rate"></div>
+        <div class="graph-container">
+          <canvas id="graph-b"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <script type="text/javascript">
+      class AttentionVisualizer {
+          constructor(contentId, rateId, graphId, modelId) {
+              this.content = document.querySelector(contentId)
+              this.rateDisplay = document.querySelector(rateId)
+              this.modelId = modelId
+              
+              // Add new elements
+              this.promptDisplay = document.querySelector(`#prompt-display-${modelId}`)
+              this.slider = document.querySelector(`#slider-${modelId}`)
+              this.sliderInfo = document.querySelector(`#slider-info-${modelId}`)
+              
+              // State tracking
+              this.generatedTokens = []
+              this.promptTokens = []
+              this.attentionByStep = []
+              
+              // Bind slider event
+              this.slider.addEventListener('input', () => this.updateDisplayForStep())
+          }
+
+          updateDisplay(data) {
+              if (data.type === 'token') {
+                  const text = data.text.replace(/Ġ/g, ' ').replace(/Ċ/g, '\n')
+                  if (this.content.textContent === 'Generating...') {
+                      this.content.textContent = text
+                  } else {
+                      this.content.textContent += text
+                      this.generatedTokens.push(text)
+                  }
+              } else if (data.type === 'attention') {
+                  this.promptTokens = data.prompt_tokens
+                  this.attentionByStep = data.attention_by_step
+                  
+                  // Update slider range
+                  this.slider.max = this.attentionByStep.length
+                  this.slider.value = this.attentionByStep.length
+                  this.slider.disabled = false
+                  
+                  this.updatePromptDisplay()
+                  this.updateDisplayForStep()
+              }
+          }
+
+          updatePromptDisplay() {
+              this.promptDisplay.innerHTML = this.promptTokens
+                  .map(token => `<span class="prompt-token">${token.replace(/Ġ/g, ' ').replace(/Ċ/g, '\n')}</span>`)
+                  .join('')
+          }
+
+          updateDisplayForStep() {
+              const step = parseInt(this.slider.value)
+              this.sliderInfo.textContent = `Step: ${step} / ${this.attentionByStep.length}`
+              
+              // Update the generated text to show only tokens up to current step
+              this.content.textContent = this.generatedTokens.slice(0, step).join('')
+              
+              // Update attention highlighting
+              if (step > 0 && this.attentionByStep.length > 0) {
+                  const attentions = this.attentionByStep[step - 1]
+                  const promptTokens = this.promptDisplay.querySelectorAll('.prompt-token')
+                  
+                  promptTokens.forEach((tokenSpan, i) => {
+                      const attention = attentions[i]
+                      const intensity = Math.min(attention * 30, 1)
+                      tokenSpan.style.backgroundColor = `rgba(255, 102, 102, ${intensity})`
+                  })
+              } else {
+                  // Clear highlighting when at step 0
+                  const promptTokens = this.promptDisplay.querySelectorAll('.prompt-token')
+                  promptTokens.forEach(tokenSpan => {
+                      tokenSpan.style.backgroundColor = 'transparent'
+                  })
+              }
+          }
+
+          reset() {
+              this.content.textContent = ''
+              this.promptDisplay.textContent = ''
+              this.rateDisplay.textContent = ''
+              this.generatedTokens = []
+              this.promptTokens = []
+              this.attentionByStep = []
+              this.slider.value = 0
+              this.slider.max = 0
+              this.slider.disabled = true
+              this.sliderInfo.textContent = 'Step: 0 / 0'
+          }
+      }
+
+      class AttentionController {
+          constructor() {
+              this.runButton = document.querySelector('#run')
+              this.prompt = document.querySelector('#prompt')
+              
+              this.visualizers = {
+                  'a': new AttentionVisualizer('#content-a', '#rate-a', '#graph-a', 'a'),
+                  'b': new AttentionVisualizer('#content-b', '#rate-b', '#graph-b', 'b')
+              }
+              
+              this.runButton.addEventListener('click', () => this.generate())
+              this.modelsDone = { a: false, b: false };
+          }
+
+          generate() {
+              this.runButton.disabled = true;
+              this.modelsDone = { a: false, b: false };
+              
+              const prompt = this.prompt.value;
+              
+              Object.values(this.visualizers).forEach(v => {
+                  v.reset();
+                  v.content.textContent = 'Generating...';
+              });
+              
+              const eventSource = new EventSource(`/attention?prompt=${encodeURIComponent(prompt)}`);
+              
+              eventSource.onmessage = (event) => {
+                  const data = JSON.parse(event.data);
+                  
+                  if (data.done) {
+                      // Only close when both models are done
+                      this.modelsDone[data.model] = true;
+                      if (this.modelsDone.a && this.modelsDone.b) {
+                          eventSource.close();
+                          this.runButton.disabled = false;
+                      }
+                      return;
+                  }
+                  
+                  if (data.error) {
+                      console.error('Server error:', data.error);
+                      this.modelsDone[data.model] = true;
+                      return;
+                  }
+                  
+                  const visualizer = this.visualizers[data.model];
+                  if (visualizer) {
+                      visualizer.updateDisplay(data);
+                  }
+              };
+              
+              eventSource.onerror = (error) => {
+                  console.error('EventSource error:', error)
+                  eventSource.close()
+                  this.runButton.disabled = false
+              }
+          }
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+          window.controller = new AttentionController()
+      })
+    </script>
+  </body>
+</html>
